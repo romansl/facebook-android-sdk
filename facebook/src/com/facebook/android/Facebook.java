@@ -22,18 +22,31 @@ import java.net.MalformedURLException;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.Dialog;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.DialogInterface.OnCancelListener;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.ResolveInfo;
 import android.content.pm.Signature;
+import android.content.pm.PackageManager.NameNotFoundException;
+import android.graphics.Bitmap;
+import android.net.Uri;
 import android.os.Bundle;
 import android.text.TextUtils;
 import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.Window;
 import android.webkit.CookieSyncManager;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+import android.widget.TextView;
+import android.widget.ViewAnimator;
 
 /**
  * Main Facebook object for interacting with the Facebook developer API.
@@ -62,12 +75,9 @@ public class Facebook {
     private static final int DEFAULT_AUTH_ACTIVITY_CODE = 32665;
 
     // Facebook server endpoints: may be modified in a subclass for testing
-    protected static String DIALOG_BASE_URL =
-        "https://m.facebook.com/dialog/";
-    protected static String GRAPH_BASE_URL =
-        "https://graph.facebook.com/";
-    protected static String RESTSERVER_URL =
-        "https://api.facebook.com/restserver.php";
+    protected static String DIALOG_BASE_URL = "https://m.facebook.com/dialog/";
+    protected static String GRAPH_BASE_URL = "https://graph.facebook.com/";
+    protected static String RESTSERVER_URL = "https://api.facebook.com/restserver.php";
 
     private String mAccessToken = null;
     private long mAccessExpires = 0;
@@ -75,7 +85,7 @@ public class Facebook {
 
     private Activity mAuthActivity;
     private String[] mAuthPermissions;
-    private int mAuthActivityCode;
+    private int mAuthActivityCode = -1;
     private DialogListener mAuthDialogListener;
 
     /**
@@ -619,11 +629,108 @@ public class Facebook {
             Util.showAlert(context, "Error",
                     "Application requires permission to access the Internet");
         } else {
-            new FbDialog(context, url, listener).show();
+        	//new FbDialog(context, url, listener).show();
+        	createDialog(context, url, listener).show();
         }
     }
+    
+    private static final String DISPLAY_STRING = "touch";
 
-    /**
+    private Dialog createDialog(final Context context, String url, final DialogListener listener) {
+    	final Dialog dialog = new Dialog(context);
+    	dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+    	
+    	LayoutInflater inflater = LayoutInflater.from(context);
+    	View root = inflater.inflate(R.layout.facebook_dialog, null);
+    	dialog.setContentView(root, new FrameLayout.LayoutParams(460, 260));
+
+    	final ViewAnimator switcher = (ViewAnimator) dialog.findViewById(R.id.switcher);
+    	final TextView title = (TextView) dialog.findViewById(R.id.title);
+    	final WebView webView = (WebView) dialog.findViewById(R.id.web);
+    	
+    	title.setCompoundDrawablePadding(6);
+   
+        webView.getSettings().setJavaScriptEnabled(true);
+        webView.loadUrl(url);
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                Log.d("Facebook-WebView", "Redirect URL: " + url);
+                
+                if (url.startsWith(Facebook.REDIRECT_URI)) {
+                    Bundle values = Util.parseUrl(url);
+
+                    String error = values.getString("error");
+                    if (error == null) {
+                        error = values.getString("error_type");
+                    }
+
+                    if (error == null) {
+                        listener.onComplete(values);
+                    } else if (error.equals("access_denied") ||
+                               error.equals("OAuthAccessDeniedException")) {
+                        listener.onCancel();
+                    } else {
+                        listener.onFacebookError(new FacebookError(error));
+                    }
+
+                    dialog.dismiss();
+                    return true;
+                } else if (url.startsWith(Facebook.CANCEL_URI)) {
+                    listener.onCancel();
+                    dialog.dismiss();
+                    return true;
+                } else if (url.contains(DISPLAY_STRING)) {
+                    return false;
+                }
+                
+                // launch non-dialog URLs in a full browser
+                context.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                return true;
+            }
+
+            @Override
+            public void onReceivedError(WebView view, int errorCode,
+                    String description, String failingUrl) {
+                listener.onError(new DialogError(description, errorCode, failingUrl));
+                dialog.dismiss();
+            }
+
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                Log.d("Facebook-WebView", "Webview loading URL: " + url);
+                
+                if (switcher.getDisplayedChild() != 0)
+                	switcher.setDisplayedChild(0);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                String titleText = webView.getTitle();
+                
+                if (titleText != null && titleText.length() > 0) {
+                    title.setText(titleText);
+                }
+                
+                switcher.setDisplayedChild(1);
+                
+                // Волшебным образом фиксит баг с невозможностью
+                // получить фокус у контролов на веб-форме.
+                webView.requestFocus();
+            }
+        });
+
+        dialog.setOnCancelListener(new OnCancelListener() {
+			@Override
+			public void onCancel(DialogInterface dialog) {
+				listener.onCancel();				
+			}
+		});
+
+    	return dialog;
+	}
+    
+	/**
      * @return boolean - whether this object has an non-expired session token
      */
     public boolean isSessionValid() {
